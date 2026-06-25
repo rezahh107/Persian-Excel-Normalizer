@@ -43,18 +43,14 @@ from typing import Callable, Optional, TypeVar, overload
 import openpyxl
 from openpyxl.worksheet.worksheet import Worksheet
 
-# ---------------------------------------------------------------------------
-# Module-level logger — never pollutes the root logger
-# ---------------------------------------------------------------------------
-
 log: logging.Logger = logging.getLogger("excel_normalizer.core")
 
-# ---------------------------------------------------------------------------
-# Pre-built translate tables (constructed once at import time)
-# ---------------------------------------------------------------------------
 
-_BASE_TABLE: dict[str, str | None] = {
-    # ── Arabic → Persian substitutions ────────────────────────────────────
+class NormalizationCancelled(RuntimeError):
+    """Raised when cancellation is requested before saving output."""
+
+
+_BASE_TABLE: dict[str, Optional[str]] = {
     "\u064a": "\u06cc",   # Arabic yeh        → Persian yeh
     "\u0643": "\u06a9",   # Arabic kaf         → Persian kaf
     "\u0649": "\u06cc",   # Alef maqsura       → Persian yeh
@@ -63,7 +59,6 @@ _BASE_TABLE: dict[str, str | None] = {
     "\u0625": "\u0627",   # Alef hamza below   → bare alef
     "\u0624": "\u0648",   # Waw with hamza     → bare waw
     "\u0626": "\u06cc",   # Yeh with hamza     → Persian yeh
-    # ── Invisible control chars → delete (None) ───────────────────────────
     "\u200d": None,        # ZWJ
     "\u200e": None,        # LRM
     "\u200f": None,        # RLM
@@ -75,20 +70,15 @@ _BASE_TABLE: dict[str, str | None] = {
     "\u2068": None,        # FSI
     "\u2069": None,        # PDI
     "\xad": None,          # SHY (soft hyphen)
-    # ── NBSP → regular space ──────────────────────────────────────────────
-    "\xa0": " ",
+    "\xa0": " ",           # NBSP → regular space
 }
 
 _TABLE_REPLACE_ZWNJ = str.maketrans({**_BASE_TABLE, "\u200c": " "})
 _TABLE_KEEP_ZWNJ = str.maketrans(_BASE_TABLE)
 
 _MULTI_SPACE_RE: re.Pattern[str] = re.compile(r"[ \t]+")
+_SUPPORTED_EXTENSIONS = {".xlsx", ".xlsm"}
 _T = TypeVar("_T")
-
-
-# ---------------------------------------------------------------------------
-# Pure normalisation functions
-# ---------------------------------------------------------------------------
 
 
 @overload
@@ -101,7 +91,7 @@ def normalize_text(text: _T, *, replace_zwnj: bool = True) -> _T:
     ...
 
 
-def normalize_text(text, *, replace_zwnj: bool = True):
+def normalize_text(text: object, *, replace_zwnj: bool = True) -> object:
     """Normalise a single Persian string.
 
     Non-string inputs are returned unchanged to preserve legacy callers that
@@ -157,11 +147,6 @@ def normalize_worksheet(
     return changed
 
 
-# ---------------------------------------------------------------------------
-# Workbook-level orchestration
-# ---------------------------------------------------------------------------
-
-
 def _estimate_total_cells(workbook: openpyxl.Workbook) -> int:
     """Return a conservative cell-count estimate across all sheets."""
     total = 0
@@ -170,12 +155,34 @@ def _estimate_total_cells(workbook: openpyxl.Workbook) -> int:
     return max(total, 1)
 
 
+def _validate_destination(source: Path, destination: Path) -> None:
+    """Validate output path for data safety and OOXML extension consistency."""
+    source_suffix = source.suffix.lower()
+    destination_suffix = destination.suffix.lower()
+
+    if destination_suffix not in _SUPPORTED_EXTENSIONS:
+        raise ValueError(
+            f"Unsupported output extension '{destination.suffix}'. "
+            "Expected .xlsx or .xlsm."
+        )
+    if destination_suffix != source_suffix:
+        raise ValueError(
+            "Output extension must match input extension to avoid Excel format "
+            f"mismatch: {source_suffix} -> {destination_suffix}."
+        )
+    if source.resolve() == destination.resolve():
+        raise ValueError(
+            "Refusing to overwrite the input workbook in-place. "
+            "Choose a different output path."
+        )
+
+
 def _atomic_save(workbook: openpyxl.Workbook, destination: Path) -> None:
     """Save *workbook* to *destination* using same-directory atomic replace.
 
     The temporary file is created in the destination directory, then promoted
-    with ``os.replace()``. That avoids cross-device moves and prevents a
-    partially-written destination from replacing the user's file.
+    with ``os.replace()``. Cleanup failures are logged but never allowed to
+    hide the original save/replace error.
     """
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -194,8 +201,8 @@ def _atomic_save(workbook: openpyxl.Workbook, destination: Path) -> None:
     except Exception:
         try:
             tmp.unlink(missing_ok=True)
-        finally:
-            pass
+        except OSError as cleanup_error:
+            log.warning("Could not remove temporary file '%s': %s", tmp, cleanup_error)
         raise
 
 
@@ -214,10 +221,11 @@ def normalize_workbook(
 
     if not source.exists():
         raise FileNotFoundError(f"Input file not found: {source}")
-    if source.suffix.lower() not in {".xlsx", ".xlsm"}:
+    if source.suffix.lower() not in _SUPPORTED_EXTENSIONS:
         raise ValueError(
             f"Unsupported extension '{source.suffix}'. Expected .xlsx or .xlsm."
         )
+    _validate_destination(source, destination)
 
     keep_vba = source.suffix.lower() == ".xlsm"
     log.info("Loading workbook: %s", source)
@@ -261,7 +269,10 @@ def normalize_workbook(
         if was_cancelled:
             break
 
-    if progress_cb is not None and not was_cancelled:
+    if was_cancelled:
+        raise NormalizationCancelled("Normalization cancelled before saving output.")
+
+    if progress_cb is not None:
         progress_cb(total_cells, total_cells)
 
     log.info("Saving to: %s (atomic write)", destination)
@@ -269,21 +280,17 @@ def normalize_workbook(
     log.info("Done. Total cells modified: %d", total_changed)
 
 
-# ---------------------------------------------------------------------------
-# Path helpers
-# ---------------------------------------------------------------------------
-
-
 def build_output_path(source: Path) -> Path:
     """Return *source* with ``_normalized`` appended before the suffix."""
-    return Path(source).with_stem(f"{Path(source).stem}_normalized")
+    source = Path(source)
+    return source.with_stem(f"{source.stem}_normalized")
 
 
 def auto_detect_input(directory: Path) -> Path:
     """Return the first .xlsx / .xlsm in *directory* that is not normalised."""
     candidates = sorted(
         p for p in Path(directory).iterdir()
-        if p.suffix.lower() in {".xlsx", ".xlsm"}
+        if p.suffix.lower() in _SUPPORTED_EXTENSIONS
         and not p.stem.endswith("_normalized")
     )
     if not candidates:
@@ -292,11 +299,6 @@ def auto_detect_input(directory: Path) -> Path:
             "Provide an explicit INPUT path or change the working directory."
         )
     return candidates[0]
-
-
-# ---------------------------------------------------------------------------
-# CLI layer
-# ---------------------------------------------------------------------------
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -365,6 +367,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             source = args.input
         destination: Path = args.output or build_output_path(source)
         normalize_workbook(source, destination, replace_zwnj=not args.keep_zwnj)
+    except NormalizationCancelled as exc:
+        log.warning("%s", exc)
+        return 1
     except (FileNotFoundError, ValueError) as exc:
         log.error("%s", exc)
         return 1
