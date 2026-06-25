@@ -1,2 +1,35 @@
-# Persian Excel Normalizer
-A powerful tool to clean and normalize Persian (Farsi) text in Excel files. Converts Arabic letters to Persian, handles ZWNJ (half-space), removes hidden control characters, and preserves formulas. Features a PyQt6 GUI and CLI.
+# 🇮🇷 Persian Excel Normalizer
+
+[![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://python.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![PyQt6](https://img.shields.io/badge/GUI-PyQt6-brightgreen)](https://www.riverbankcomputing.com/software/pyqt/)
+[![openpyxl](https://img.shields.io/badge/Excel-openpyxl-orange)](https://openpyxl.readthedocs.io/)
+
+یک ابزار حرفه‌ای برای **پاک‌سازی و نرمال‌سازی متن فارسی** در فایل‌های اکسل (`xlsx.` و `xlsm.`).
+
+این برنامه با تبدیل حروف عربی به فارسی، مدیریت هوشمند نیم‌فاصله (ZWNJ)، حذف کاراکترهای کنترلی نامرئی و یکسان‌سازی فاصله‌ها، داده‌های شما را برای استفاده در پایگاه‌های داده، سیستم‌های تحلیل متن و چاپ آماده می‌کند.
+
+---
+
+## ✨ قابلیت‌های کلیدی
+
+- **تبدیل حروف عربی به فارسی**: تبدیل خودکار `ي` و `ك` عربی به `ی` و `ک` فارسی و سایر موارد مشابه.
+- **مدیریت نیم‌فاصله (ZWNJ)**: قابلیت حفظ یا جایگزینی نیم‌فاصله (`U+200C`) با فاصله‌ی معمولی (قابل تنظیم در رابط کاربری و خط فرمان).
+- **پاک‌سازی پیشرفته**: حذف کاراکترهای کنترل نامرئی (مانند ZWJ، LRM، RLM) و تبدیل فاصله‌های مجازی (NBSP) به فاصله‌ی عادی.
+- **امنیت کامل فرمول‌ها**: سلول‌های دارای فرمول اکسل (شروع با `=`) به‌طور خودکار شناسایی شده و **دست‌نخورده** باقی می‌مانند تا از خرابی آن‌ها جلوگیری شود.
+- **دو رابط کاربری قدرتمند**:
+  - **رابط گرافیکی (GUI)**: ساخته‌شده با PyQt6، با قابلیت کشیدن و رها کردن (Drag & Drop)، پردازش دسته‌جمعی، تم‌های روشن/تاریک و نمایش لحظه‌ای لاگ.
+  - **رابط خط فرمان (CLI)**: مناسب برای اتوماسیون و استفاده در سرورها.
+- **ذخیره‌سازی اتمیک (Atomic Save)**: برای جلوگیری از خرابی فایل در صورت بروز خطا، ابتدا در فایل موقت ذخیره و سپس جایگزین می‌شود.
+- **پردازش موازی (Threaded)**: رابط کاربری در حین پردازش فایل‌های بزرگ، قفل نمی‌کند و کاملاً واکنش‌گرا باقی می‌ماند.
+
+---
+
+---
+
+## 🚀 نصب و راه‌اندازی
+
+### ۱. دریافت کد
+```bash
+git clone https://github.com/[YOUR_USERNAME]/persian-excel-normalizer.git
+cd persian-excel-normalizer
