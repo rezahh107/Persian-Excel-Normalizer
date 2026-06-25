@@ -63,7 +63,11 @@ from PyQt6.QtWidgets import (
 )
 
 try:
-    from normalize_excel import build_output_path, normalize_workbook
+    from normalize_excel import (
+        NormalizationCancelled,
+        build_output_path,
+        normalize_workbook,
+    )
 except ImportError as _err:
     print(f"ERROR: normalize_excel.py not found — {_err}", file=sys.stderr)
     sys.exit(1)
@@ -71,7 +75,7 @@ except ImportError as _err:
 log: logging.Logger = logging.getLogger("excel_normalizer.gui")
 
 APP_NAME = "Persian Excel Normalizer"
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.3.1"
 SETTINGS_ORG = "PersianDevTools"
 SETTINGS_APP = "PersianExcelNormalizer"
 MAX_LOG_LINES = 5_000
@@ -81,6 +85,7 @@ EXCEL_SAVE_FILTER = (
     "Excel Macro-Enabled Workbook (*.xlsm);;"
     "All Files (*)"
 )
+_PROGRESS_UNITS_PER_FILE = 1_000
 
 LIGHT_THEME = """
 QMainWindow, QDialog, QWidget { background-color: #f5f5f5; color: #1a1a1a; }
@@ -168,7 +173,7 @@ class QtLogHandler(logging.Handler):
 class NormalizerWorker(QObject):
     """Executes normalisation jobs on a dedicated QThread."""
 
-    progress = pyqtSignal(int, int)   # (processed_cells, total_cells)
+    progress = pyqtSignal(int, int)   # (processed_units, total_units)
     status = pyqtSignal(str)
     finished = pyqtSignal(list, bool)  # (completed_jobs, was_cancelled)
     error = pyqtSignal(str, str)       # (user_message, full_traceback)
@@ -191,10 +196,31 @@ class NormalizerWorker(QObject):
     def _is_cancel_requested(self) -> bool:
         return self._cancel_requested
 
+    def _emit_batch_progress(
+        self,
+        file_index: int,
+        total_files: int,
+        done_cells: int,
+        total_cells: int,
+    ) -> None:
+        if total_files <= 0:
+            return
+        if total_cells <= 0:
+            file_units_done = 0
+        else:
+            file_units_done = min(
+                _PROGRESS_UNITS_PER_FILE,
+                int(done_cells / total_cells * _PROGRESS_UNITS_PER_FILE),
+            )
+        done_units = ((file_index - 1) * _PROGRESS_UNITS_PER_FILE) + file_units_done
+        total_units = total_files * _PROGRESS_UNITS_PER_FILE
+        self.progress.emit(done_units, total_units)
+
     @pyqtSlot()
     def run(self) -> None:
         completed: list[tuple[Path, Path]] = []
         total_files = len(self._jobs)
+        failed = 0
 
         for idx, (source, destination) in enumerate(self._jobs, start=1):
             if self._cancel_requested:
@@ -204,6 +230,9 @@ class NormalizerWorker(QObject):
             self.status.emit(f"File {idx}/{total_files}: {source.name}")
             log.info("Processing %d/%d: %s", idx, total_files, source.name)
 
+            def on_progress(done: int, total: int, *, file_index: int = idx) -> None:
+                self._emit_batch_progress(file_index, total_files, done, total)
+
             try:
                 normalize_workbook(
                     source,
@@ -211,9 +240,14 @@ class NormalizerWorker(QObject):
                     replace_zwnj=self._replace_zwnj,
                     cancel_check=self._is_cancel_requested,
                     on_sheet_start=self._on_sheet_start,
-                    on_progress=self.progress.emit,
+                    on_progress=on_progress,
                 )
+            except NormalizationCancelled:
+                self._cancel_requested = True
+                log.info("Cancelled before saving: %s", source.name)
+                break
             except Exception as exc:  # noqa: BLE001
+                failed += 1
                 detail = traceback.format_exc()
                 log.error("Failed on '%s': %s", source.name, exc)
                 self.error.emit(f"Error processing '{source.name}':\n{exc}", detail)
@@ -221,15 +255,19 @@ class NormalizerWorker(QObject):
 
             if not self._cancel_requested:
                 completed.append((source, destination))
-                self.progress.emit(1, 1)
+                self.progress.emit(idx, total_files)
                 log.info("Saved: %s", destination.name)
 
         if self._cancel_requested:
             self.status.emit("Cancelled by user.")
             log.info("Job cancelled by user request.")
+        elif failed:
+            self.status.emit(
+                f"Finished with {failed} error(s); {len(completed)} file(s) saved."
+            )
         else:
             self.status.emit(
-                "Completed successfully." if completed else "Finished — check log for errors."
+                "Completed successfully." if completed else "Finished — no files saved."
             )
 
         self.finished.emit(completed, self._cancel_requested)
@@ -525,6 +563,14 @@ class MainWindow(QMainWindow):
             output = Path(path)
             if not output.suffix:
                 output = output.with_suffix(default_suffix)
+            elif output.suffix.lower() != default_suffix.lower():
+                QMessageBox.warning(
+                    self,
+                    "Output Extension Mismatch",
+                    "Output extension must match the input extension "
+                    f"({default_suffix}) to avoid Excel format mismatch.",
+                )
+                return
             self._output_edit.setText(str(output))
 
     def _load_paths(self, raw_paths: list[str]) -> None:
@@ -731,6 +777,8 @@ class MainWindow(QMainWindow):
             self._cancel_btn.setEnabled(False)
             self._status_label.setText("Cancelling before close…")
             self.statusBar().showMessage("Waiting for worker to stop…")
+            if self._thread is not None:
+                self._thread.quit()
             if self._thread is not None and not self._thread.wait(5000):
                 QMessageBox.warning(
                     self,
