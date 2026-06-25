@@ -27,11 +27,13 @@
 
 ---
 
----
-
 ## 🚀 نصب و راه‌اندازی
 
 ### ۱. دریافت کد
+
 ```bash
-git clone https://github.com/[YOUR_USERNAME]/persian-excel-normalizer.git
-cd persian-excel-normalizer
+git clone https://github.com/rezahh107/Persian-Excel-Normalizer.git
+cd Persian-Excel-Normalizer
+```
+
+برای ادامه‌ی نصب، اجرای GUI، استفاده از CLI، گزینه‌های نیم‌فاصله و عیب‌یابی، [راهنمای جامع](GUIDE.md) را مطالعه کنید.
